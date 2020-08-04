@@ -1,5 +1,6 @@
 package com.was.app.http;
 
+import com.was.app.Config;
 import com.was.app.common.HttpCode;
 import com.was.app.http.rule.Rule;
 import com.was.app.http.servlet.HttpRequest;
@@ -19,10 +20,10 @@ import java.util.stream.Collectors;
 public class RequestProcessor implements Runnable {
     private final static Logger logger = LoggerFactory.getLogger(RequestProcessor.class);
     private Socket connection;
-    private List<Map<String, Object>> virtualHosts;
+    private List<Config.VirtualHosts> virtualHosts;
     private String baseServletPath = "com.was.app.";
 
-    public RequestProcessor(List<Map<String, Object>> virtualHosts, Socket connection) {
+    public RequestProcessor(List<Config.VirtualHosts> virtualHosts, Socket connection) {
         this.virtualHosts = virtualHosts;
         this.connection = connection;
     }
@@ -32,14 +33,14 @@ public class RequestProcessor implements Runnable {
         try (InputStream in = connection.getInputStream()) {
             MyHttpRequest myHttpRequest = setHttpRequest(in);
             logger.info(myHttpRequest.getHost() + " " + myHttpRequest.getPath() + " " + myHttpRequest.getMethod());
-            Map<String, Object> config = findConfig(myHttpRequest);
-            String documentRoot = (String) config.get("DocumentRoot");
-            if (isForbidden(myHttpRequest, config)) {
-                String filePath = ((Map<String, String>) config.get("ErrorDocument")).get("403");
+            Config.VirtualHosts virtualHosts = findConfig(myHttpRequest);
+            String documentRoot = virtualHosts.getDocumentRoot();
+            if (isForbidden(myHttpRequest, virtualHosts)) {
+                String filePath = (virtualHosts.getErrorDocument()).get("403");
                 processError(documentRoot + filePath, HttpCode.FORBIDDEN);
                 return;
             }
-            doServletService(myHttpRequest, config);
+            doServletService(myHttpRequest, virtualHosts);
         } catch (IOException  e) {
             logger.warn("Error talking to " + connection.getRemoteSocketAddress(), e);
         } catch (Exception e) {
@@ -47,14 +48,14 @@ public class RequestProcessor implements Runnable {
         }
     }
 
-    private void doServletService(MyHttpRequest myHttpRequest, Map<String, Object> config) throws IOException {
+    private void doServletService(MyHttpRequest myHttpRequest, Config.VirtualHosts virtualHosts) throws IOException {
         PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
         MyHttpResponse myHttpResponse = new MyHttpResponse();
-        String documentRoot = (String) config.get("DocumentRoot");
+        String documentRoot = virtualHosts.getDocumentRoot();
         myHttpResponse.setWriter(pw);
-        Class cla = getServletClass(myHttpRequest, config);
+        Class cla = getServletClass(myHttpRequest, virtualHosts);
         if (cla == null) {
-            String filePath = ((Map<String, String>) config.get("ErrorDocument")).get("404");
+            String filePath =virtualHosts.getErrorDocument().get("404");
             processError(documentRoot + filePath, HttpCode.NOT_FOUND);
             return;
         }
@@ -65,17 +66,17 @@ public class RequestProcessor implements Runnable {
             pw.flush();
         }catch (Exception e){
             logger.error("Servlet Service Error : ", e);
-            String filePath = ((Map<String, String>) config.get("ErrorDocument")).get("500");
+            String filePath = virtualHosts.getErrorDocument().get("500");
             processError(documentRoot + filePath, HttpCode.INTERNAL_SERVER_ERROR);
         }
     }
 
-    private Class getServletClass(MyHttpRequest myHttpRequest, Map<String, Object> config) {
+    private Class getServletClass(MyHttpRequest myHttpRequest, Config.VirtualHosts virtualHosts) {
         StringBuilder servletName = new StringBuilder(baseServletPath);
-        if (config.get("ServiceLocation") != null) servletName.append(config.get("ServiceLocation"));
+        if (virtualHosts.getServiceLocation() != null) servletName.append(virtualHosts.getServiceLocation());
 
-        if (config.get("UseURLMapping") != null && config.get("UseURLMapping").equals("true")) {
-            servletName.append(((Map<String, Object>) config.get("MappingUrl")).get(myHttpRequest.getPath()));
+        if (virtualHosts.isUseURLMapping()) {
+            servletName.append(virtualHosts.getMappingUrl().get(myHttpRequest.getPath()));
         } else {
             servletName.append(myHttpRequest.getPath().replace("/", "."));
         }
@@ -87,9 +88,9 @@ public class RequestProcessor implements Runnable {
         }
     }
 
-    private boolean isForbidden(MyHttpRequest myHttpRequest, Map<String, Object> config) {
-        if (config.get("UsePathRules") != null) {
-            Map<String, List<String>> rules = (Map<String, List<String>>) config.get("UsePathRules");
+    private boolean isForbidden(MyHttpRequest myHttpRequest, Config.VirtualHosts config) {
+        if (config.getUsePathRules() != null) {
+            Map<String, List<String>> rules = config.getUsePathRules();
             for (Rule rule : Rule.values()) {
                 if (rules.get(rule.getName()) != null) {
                     if (rule.isViolate(myHttpRequest, rules.get(rule.getName()))) {
@@ -101,10 +102,10 @@ public class RequestProcessor implements Runnable {
         return false;
     }
 
-    private Map<String, Object> findConfig(MyHttpRequest myHttpRequest) {
-        Map<String, Object> config = null;
-        for (Map<String, Object> virtualHost : virtualHosts) {
-            if (virtualHost.get("SeverName").equals(myHttpRequest.getHost())) {
+    private Config.VirtualHosts findConfig(MyHttpRequest myHttpRequest) {
+        Config.VirtualHosts config = null;
+        for (Config.VirtualHosts virtualHost : virtualHosts) {
+            if (virtualHost.getSeverName().equals(myHttpRequest.getHost())) {
                 config = virtualHost;
                 break;
             }
@@ -126,7 +127,8 @@ public class RequestProcessor implements Runnable {
             }
             String[] headerArray = line.split(" ");
             if (headerArray[0].startsWith("Host:")) {
-                httpRequest.setHost(headerArray[1].trim());
+                String host = headerArray[1].trim().split(":")[0];
+                httpRequest.setHost(host);
             } else if (headerArray[0].startsWith("Content-Length:")) {
                 int length = Integer.parseInt(headerArray[1].trim());
                 httpRequest.setContentLength(length);
@@ -135,6 +137,7 @@ public class RequestProcessor implements Runnable {
             } else if (headerArray[0].startsWith("Content-Type:")) {
                 httpRequest.setContentType(headerArray[1].trim());
             }
+            logger.info(line);
         }
         return httpRequest;
     }
